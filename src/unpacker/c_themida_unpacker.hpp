@@ -34,6 +34,10 @@ public:
     // dispatches, not missing imports, and must be routed to hooks::vm_enter.
     [[nodiscard]] bool is_packer_code_address(uint64_t address) const;
 
+    // Records a VM entry observed at runtime. Called from inside the emulator's
+    // dispatch hook, so it must stay free of Unicorn memory operations.
+    void note_vm_entry(uint64_t address);
+
     // helper functions, for internal use
     void on_region_save(uint64_t address, uint32_t size);
     void on_region_made_writable(uint64_t address, uint32_t size);
