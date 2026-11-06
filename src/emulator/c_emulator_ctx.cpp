@@ -1031,9 +1031,35 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                     {
                         const auto eip = get_x86_reg_value(UC_X86_REG_EIP);
                         const auto esp = get_x86_reg_value(UC_X86_REG_ESP);
-                        printf("[unthemidator][diag]   EIP=0x%llX ESP=0x%llX\n",
+                        const auto eax = get_x86_reg_value(UC_X86_REG_EAX);
+                        const auto ebx = get_x86_reg_value(UC_X86_REG_EBX);
+                        const auto ecx = get_x86_reg_value(UC_X86_REG_ECX);
+                        const auto edx = get_x86_reg_value(UC_X86_REG_EDX);
+                        const auto esi = get_x86_reg_value(UC_X86_REG_ESI);
+                        const auto edi = get_x86_reg_value(UC_X86_REG_EDI);
+                        const auto ebp = get_x86_reg_value(UC_X86_REG_EBP);
+                        printf("[unthemidator][diag]   EIP=0x%llX ESP=0x%llX EAX=0x%llX EBX=0x%llX\n",
                             static_cast<unsigned long long>(eip),
-                            static_cast<unsigned long long>(esp));
+                            static_cast<unsigned long long>(esp),
+                            static_cast<unsigned long long>(eax),
+                            static_cast<unsigned long long>(ebx));
+                        printf("[unthemidator][diag]   ECX=0x%llX EDX=0x%llX ESI=0x%llX EDI=0x%llX EBP=0x%llX\n",
+                            static_cast<unsigned long long>(ecx),
+                            static_cast<unsigned long long>(edx),
+                            static_cast<unsigned long long>(esi),
+                            static_cast<unsigned long long>(edi),
+                            static_cast<unsigned long long>(ebp));
+
+                        // full instruction bytes at EIP (up to 15)
+                        printf("[unthemidator][diag]   insn@EIP:");
+                        for (uint32_t k = 0; k < 15; ++k) {
+                            const auto b = read<uint8_t>(eip + k);
+                            if (!b) {
+                                break;
+                            }
+                            printf(" %02X", *b);
+                        }
+                        printf("\n");
                     }
                 }
 
