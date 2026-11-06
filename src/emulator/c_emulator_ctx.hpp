@@ -176,6 +176,11 @@ private:
 
     std::unordered_map<uint64_t, s_hooked_function> m_hooks{};
 
+    // FIX: last address touched by an unmapped access. Recorded by a Unicorn hook
+    // and serviced from emulate(), because mapping memory inside a hook callback is
+    // unsupported and corrupts the engine state.
+    uint64_t m_pending_unmapped = 0;
+
     std::unordered_set<uint64_t> m_exception_handlers{};
 
     std::unordered_map<uint64_t, s_process_snapshot> m_process_snapshots{};

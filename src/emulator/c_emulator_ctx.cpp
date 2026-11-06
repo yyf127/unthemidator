@@ -779,9 +779,32 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                 break;
             }
 
-            // FIX: treat unmapped-memory faults as non-fatal. The on-demand mapping
-            // hook (installed in run()) normally prevents these, but some paths bypass
-            // it; stopping gracefully keeps whatever we already unpacked.
+            // FIX: service an unmapped access recorded by the hook. uc_mem_map() must
+            // not be called from inside a hook callback, so the hook only stores the
+            // address in m_pending_unmapped and we map it here, back in normal context.
+            static int s_on_demand_pages = 0;
+            if (m_pending_unmapped != 0) {
+                const auto fault = m_pending_unmapped;
+                m_pending_unmapped = 0;
+
+                if (s_on_demand_pages < 65536 && fault >= 0x10000) {
+                    const auto page = fault & ~0xFFFULL;
+
+                    if (uc_mem_map(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK) {
+                        ++s_on_demand_pages;
+                        if (s_on_demand_pages <= 12) {
+                            printf("[unthemidator][fix] on-demand mapped page 0x%llX\n",
+                                static_cast<unsigned long long>(page));
+                        }
+                        set_pc(fault);
+                        start = fault;
+                        result = UC_ERR_OK;
+                        continue;
+                    }
+                }
+            }
+
+            // FIX: treat unmapped-memory faults as non-fatal.
             if (result == UC_ERR_READ_UNMAPPED || result == UC_ERR_WRITE_UNMAPPED ||
                 result == UC_ERR_FETCH_UNMAPPED) {
                 const auto fault_pc = get_pc();
@@ -893,50 +916,23 @@ void c_emulator_ctx::run(const uint64_t start, const uint64_t end, std::function
     uc_hook code_trace, mem_trace;
     auto err = UC_ERR_OK;
 
-    // FIX: map unmapped pages on demand.
-    // Themida's runtime frequently touches addresses that were never explicitly
-    // allocated as far as the emulator is concerned. Without this hook Unicorn
-    // aborts with UC_ERR_READ/WRITE_UNMAPPED (6/7), discarding a nearly complete dump.
-    // Returning true tells Unicorn the fault has been handled.
-    static int s_on_demand_pages = 0;
+    // FIX: remember unmapped accesses instead of servicing them inside the hook.
+    // Calling uc_mem_map()/uc_mem_protect() from within a Unicorn hook callback is
+    // not supported and corrupts the engine's internal state (observed as a hard
+    // segfault right after the first on-demand mapping). The hook only records the
+    // faulting address; emulate() performs the mapping once control returns.
+    m_pending_unmapped = 0;
     uc_hook unmapped_trace = 0;
 
     if (uc_hook_add(m_uc, &unmapped_trace,
             UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED,
-            reinterpret_cast<void*>(+[](uc_engine* uc, const uc_mem_type type, const uint64_t address,
-                                        const int /*size*/, const int64_t /*value*/, void* /*user*/) -> bool {
-                if (s_on_demand_pages >= 65536) {
-                    return false;
-                }
-
-                // Do NOT back the low NULL page with memory. A fetch there means the
-                // guest called a null/poison function pointer; letting the fault reach
-                // emulate() lets it be treated as a completed call instead of us
-                // single-stepping through a mile of zero-filled address space until we
-                // hit an unmappable page and die with UC_ERR_FETCH_PROT.
-                if (address < 0x10000) {
-                    return false;
-                }
-
-                const auto page = address & ~0xFFFULL;
-
-                // try to map the faulting page; if already mapped, just retry
-                if (uc_mem_map(uc, page, 0x1000, UC_PROT_ALL) != UC_ERR_OK) {
-                    // maybe it is already mapped but lacks the needed permission
-                    if (uc_mem_protect(uc, page, 0x1000, UC_PROT_ALL) != UC_ERR_OK) {
-                        return false;
-                    }
-                } else {
-                    ++s_on_demand_pages;
-                    if (s_on_demand_pages <= 12) {
-                        printf("[unthemidator][fix] on-demand mapped page 0x%llX (type=%d)\n",
-                            static_cast<unsigned long long>(page), static_cast<int>(type));
-                    }
-                }
-
-                return true;
+            reinterpret_cast<void*>(+[](uc_engine*, const uc_mem_type, const uint64_t address,
+                                        const int /*size*/, const int64_t /*value*/, void* user) -> bool {
+                auto* self = static_cast<c_emulator_ctx*>(user);
+                self->m_pending_unmapped = address;
+                return false; // let Unicorn raise the fault; we handle it outside
             }),
-            nullptr, 1, 0) != UC_ERR_OK) {
+            this, 1, 0) != UC_ERR_OK) {
         unmapped_trace = 0;
     }
 
