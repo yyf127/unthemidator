@@ -90,6 +90,15 @@ target_link_libraries(unthemidator PRIVATE
 if (WIN32)
     # dbghelp: the crash filter walks the stack and resolves symbols.
     target_link_libraries(unthemidator PRIVATE dbghelp)
+
+    # Emit debug info so a crash can be attributed to a function and line:
+    #   /Z7   - embed debug info in the object/exe (works even if the PDB is lost)
+    #   /DEBUG - make the linker produce a PDB next to the binary
+    #   /MAP   - textual map file, a last-resort way to match an address to a function
+    if (MSVC)
+        target_compile_options(unthemidator PRIVATE /Z7)
+        target_link_options(unthemidator PRIVATE /DEBUG /MAP)
+    endif()
 endif()
 
 target_compile_features(unthemidator PRIVATE cxx_std_20)
