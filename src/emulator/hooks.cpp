@@ -645,6 +645,8 @@ void hooks::message_box_ex_a(const c_emulator_ctx *ctx) {
 }
 
 void hooks::nt_query_information_process(c_emulator_ctx *ctx) {
+    static int s_unhandled_info_classes = 0;
+
     const auto proc_info_class = static_cast<uint32_t>(ctx->get_arg(1));
     const auto proc_info_buffer = ctx->get_arg(2);
     const auto proc_info_length = static_cast<uint32_t>(ctx->get_arg(3));
@@ -689,13 +691,28 @@ void hooks::nt_query_information_process(c_emulator_ctx *ctx) {
         }
 
         default:
-            throw std::runtime_error("NtQueryInformationProcess: unsupported proc_info class");
+            // Do not throw: this runs from inside a Unicorn hook, and letting an
+            // exception escape corrupts the engine's state (the process dies with
+            // SIGSEGV instead of reporting anything useful). Themida probes several
+            // classes; the honest answer for one we do not model is
+            // STATUS_INVALID_INFO_CLASS (0xC0000003), which keeps the runtime on a
+            // branch it already handles.
+            if (s_unhandled_info_classes < 16) {
+                ++s_unhandled_info_classes;
+                printf("[unthemidator][runtime] NtQueryInformationProcess: unhandled class %u -> STATUS_INVALID_INFO_CLASS\n",
+                    proc_info_class);
+            }
+
+            nt_status = 0xC0000003; // STATUS_INVALID_INFO_CLASS
+            break;
     }
 
     ctx->set_result(nt_status);
 }
 
 void hooks::nt_query_system_information(const c_emulator_ctx *ctx) {
+    static int s_unhandled_sys_info = 0;
+
     const auto sys_info_class = static_cast<uint32_t>(ctx->get_arg(0));
     const auto sys_info_buffer = ctx->get_arg(1);
     const auto sys_info_length = static_cast<uint32_t>(ctx->get_arg(2));
@@ -759,7 +776,15 @@ void hooks::nt_query_system_information(const c_emulator_ctx *ctx) {
             query_modules.operator()<uint64_t>();
         }
     } else {
-        throw std::runtime_error("NtQuerySystemInformation: unsupported sys_info class");
+        // Never throw from a hook: an escaping exception corrupts Unicorn's internal
+        // state and the host dies with SIGSEGV. Answer with a status the caller can
+        // handle instead (STATUS_INVALID_INFO_CLASS).
+        if (s_unhandled_sys_info < 16) {
+            ++s_unhandled_sys_info;
+            printf("[unthemidator][runtime] NtQuerySystemInformation: unhandled class %u -> STATUS_INVALID_INFO_CLASS\n",
+                static_cast<uint32_t>(ctx->get_arg(0)));
+        }
+        nt_status = 0xC0000003; // STATUS_INVALID_INFO_CLASS
     }
 
     ctx->set_result(nt_status);
@@ -791,8 +816,15 @@ void hooks::nt_protect_virtual_memory(const c_emulator_ctx *ctx) {
 
 void hooks::nt_query_object(c_emulator_ctx *ctx) {
     if (static_cast<uint32_t>(ctx->get_arg(1)) != 0) {
-        // ObjectBasicInformation
-        throw std::runtime_error("NtQueryObject: unsupported information class");
+        // ObjectBasicInformation is the only class we model. Report the class as
+        // invalid rather than throwing out of the hook (see nt_query_object's peers).
+        static int s_unhandled_object_classes = 0;
+        if (s_unhandled_object_classes++ < 16) {
+            printf("[unthemidator][runtime] NtQueryObject: unhandled class %u -> STATUS_INVALID_INFO_CLASS\n",
+                static_cast<uint32_t>(ctx->get_arg(1)));
+        }
+        ctx->set_result(0xC0000003); // STATUS_INVALID_INFO_CLASS
+        return;
     }
 
     if (ctx->get_arg(0) != k_created_thread_handle) {
