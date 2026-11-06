@@ -870,6 +870,33 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                 break;
             }
 
+            // FIX: a fetch into a mapped-but-non-executable page is not fatal either.
+            // Themida decrypts its own stubs in place and then runs them; depending on
+            // how the region was committed the page may still be RW. Grant execute on
+            // the containing page and retry, the same way single_step() already does.
+            if (result == UC_ERR_FETCH_PROT) {
+                const auto pc = get_pc();
+                const auto page = pc & ~0xFFFULL;
+
+                if (uc_mem_protect(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK) {
+                    static int s_exec_granted = 0;
+                    if (s_exec_granted++ < 16) {
+                        printf("[unthemidator][fix] granted execute on page 0x%llX (pc=0x%llX)\n",
+                            static_cast<unsigned long long>(page),
+                            static_cast<unsigned long long>(pc));
+                    }
+                    set_pc(pc);
+                    start = pc;
+                    result = UC_ERR_OK;
+                    continue;
+                }
+
+                printf("[unthemidator][fix] fetch-prot at pc=0x%llX, stopping\n",
+                    static_cast<unsigned long long>(pc));
+                result = UC_ERR_OK;
+                break;
+            }
+
             // FIX: an unmapped access is a genuine access violation on real Windows.
             // Dispatch it through the guest's own exception handlers instead of either
             // aborting or blindly mapping memory. Themida installs a VEH precisely to
