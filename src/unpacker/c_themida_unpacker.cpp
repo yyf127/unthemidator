@@ -252,10 +252,16 @@ void c_themida_unpacker::startup() {
         }
     } catch (std::runtime_error &e) {
         std::cout << "[unthemidator][diag] emulation raised: " << e.what() << std::endl;
-        // only throw if there are no OEP candidates
-        if (m_called_addresses.empty()) {
+        // Only surface the failure when nothing at all was learned: execution may
+        // still have crossed several unpacking stages, and the region saves recorded
+        // along the way are exactly what the later VM/decompression passes consume.
+        // Throwing here aborts before decompress_vms() and loses that progress.
+        if (m_called_addresses.empty() && m_local_regions.empty()) {
             throw;
         }
+        std::cout << "[unthemidator][diag] continuing despite emulation fault ("
+                  << m_called_addresses.size() << " callbacks, "
+                  << m_local_regions.size() << " regions recorded)" << std::endl;
     }
 
     std::cout << "[unthemidator][diag] OEP candidates collected: "
