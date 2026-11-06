@@ -2,6 +2,7 @@
 #include <fstream>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 #include "c_emulator.hpp"
 #include "windows.hpp"
@@ -1246,16 +1247,25 @@ void c_emulator_ctx::run(const uint64_t start, const uint64_t end, std::function
     uc_hook code_trace, mem_trace;
     auto err = UC_ERR_OK;
 
-    // FIX: back the poison-handle region with real, writable memory.
+    // FIX: back the poison-handle region with executable "return" stubs.
     // dispatch_hook() returns 0x13370000 for calls to APIs it does not hook. Themida
-    // treats that value as a handle and then derives pointers from it (e.g. reads
-    // [handle + 0x8], indexes arrays), which would fault on unmapped space. Reserving
-    // a page there lets those accesses succeed and yield zeroes instead of aborting.
+    // treats that value as a handle and may either derive pointers from it (reads
+    // yield 0) OR call through it as if it were a function. A page of zero bytes is
+    // disastrous in the latter case: `00 00` decodes as `add [eax], al` and the guest
+    // runs off the end of the page with UC_ERR_FETCH_UNMAPPED.
+    //
+    // Filling the whole region with 0xC3 (`ret`) makes both cases benign: a call
+    // lands on a `ret` and simply returns, while a data read still yields 0xC3 bytes
+    // that caller code only ever compares or copies.
     constexpr uint64_t k_poison_base = 0x13370000;
     constexpr uint64_t k_poison_size = 0x10000;
     if (uc_mem_map(m_uc, k_poison_base, k_poison_size, UC_PROT_ALL) != UC_ERR_OK) {
         // already mapped (or mapped at a different granularity) - just ensure access
         uc_mem_protect(m_uc, k_poison_base, k_poison_size, UC_PROT_ALL);
+    }
+    {
+        const std::vector ret_stubs(k_poison_size, static_cast<uint8_t>(0xC3));
+        uc_mem_write(m_uc, k_poison_base, ret_stubs.data(), ret_stubs.size());
     }
 
     // FIX: remember unmapped accesses instead of servicing them inside the hook.
