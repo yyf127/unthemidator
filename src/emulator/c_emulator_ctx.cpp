@@ -788,6 +788,38 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                 auto fault = m_pending_unmapped != 0 ? m_pending_unmapped : get_pc();
                 m_pending_unmapped = 0;
 
+                // The faulting page may already be mapped (a memory-indirect operand
+                // dereferenced an address that the emulator never committed). In that
+                // case the offending address is one of the base/index registers, so
+                // commit every page those registers point at and retry.
+                if (result == UC_ERR_READ_UNMAPPED && (fault & ~0xFFFULL) == (get_pc() & ~0xFFFULL)) {
+                    static int s_indirect_commits = 0;
+                    bool committed_any = false;
+
+                    const uc_x86_reg candidates[] = {
+                        UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX,
+                        UC_X86_REG_ESI, UC_X86_REG_EDI, UC_X86_REG_EBP,
+                    };
+
+                    for (const auto reg : candidates) {
+                        const auto value = get_x86_reg_value(reg);
+
+                        if (value >= 0x10000 && commit_reserved_page(value)) {
+                            committed_any = true;
+                            if (s_indirect_commits++ < 16) {
+                                printf("[unthemidator][fix] committed page behind register 0x%llX\n",
+                                    static_cast<unsigned long long>(value));
+                            }
+                        }
+                    }
+
+                    if (committed_any) {
+                        start = get_pc();
+                        result = UC_ERR_OK;
+                        continue;
+                    }
+                }
+
                 // If the address falls inside a region the guest reserved but has not
                 // committed yet, commit that page. Guest code then proceeds normally,
                 // exactly as it would after a real VirtualAlloc(MEM_COMMIT).
