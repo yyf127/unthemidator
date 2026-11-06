@@ -16,10 +16,61 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <dbghelp.h>
+#include <cstdio>
+
+namespace {
+
+// Resolve one address to "module!symbol (+0xNN)" using whatever symbol source is
+// available (PDB next to the exe, or /Z7 info embedded in the binary).
+struct s_symbol_printer {
+    HANDLE process = GetCurrentProcess();
+
+    explicit s_symbol_printer() {
+        // The search path must be non-null for dbghelp to look next to the image;
+        // passing nullptr disables searching entirely, which is why an earlier
+        // revision only printed raw addresses.
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+        SymInitialize(process, nullptr, TRUE);
+    }
+
+    void print(const DWORD index, const void* address, const DWORD64 fallback_addr) {
+        const auto addr = reinterpret_cast<DWORD64>(address);
+
+        alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 512] = {};
+        auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        symbol->MaxNameLen = 511;
+
+        DWORD64 displacement = 0;
+        if (SymFromAddr(process, addr, &displacement, symbol)) {
+            IMAGEHLP_LINE64 line{};
+            line.SizeOfStruct = sizeof(line);
+            DWORD line_displacement = 0;
+
+            if (SymGetLineFromAddr64(process, addr, &line_displacement, &line)) {
+                std::fprintf(stderr, "[unthemidator][crash]   #%02lu %s + 0x%llX  (%s:%lu)\n",
+                    static_cast<unsigned long>(index), symbol->Name,
+                    static_cast<unsigned long long>(displacement),
+                    line.FileName, static_cast<unsigned long>(line.LineNumber));
+            } else {
+                std::fprintf(stderr, "[unthemidator][crash]   #%02lu %s + 0x%llX\n",
+                    static_cast<unsigned long>(index), symbol->Name,
+                    static_cast<unsigned long long>(displacement));
+            }
+            return;
+        }
+
+        std::fprintf(stderr, "[unthemidator][crash]   #%02lu 0x%llX (no symbols)\n",
+            static_cast<unsigned long>(index),
+            static_cast<unsigned long long>(fallback_addr));
+    }
+};
+
+}
 
 // A crash inside the emulator gives no stack and (with stdout buffered) no clue about
-// where it happened. Install a filter that reports the faulting address and walks the
-// stack, then re-raises so behaviour is otherwise unchanged.
+// where it happened. Install a filter that reports the faulting address and a
+// symbolised back trace, then let the default handler run (process still dies).
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
     const auto* record = info->ExceptionRecord;
 
@@ -34,8 +85,11 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
             reinterpret_cast<void*>(record->ExceptionInformation[i]));
     }
 
-    const auto process = GetCurrentProcess();
-    SymInitialize(process, nullptr, TRUE);
+    s_symbol_printer printer;
+
+    std::fprintf(stderr, "[unthemidator][crash] faulting site:\n");
+    printer.print(0, record->ExceptionAddress,
+        reinterpret_cast<DWORD64>(record->ExceptionAddress));
 
     std::vector<void*> frames(64);
     const auto captured = CaptureStackBackTrace(0, static_cast<DWORD>(frames.size()),
@@ -43,7 +97,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
 
     std::fprintf(stderr, "[unthemidator][crash] %u frames:\n", captured);
     for (unsigned i = 0; i < captured; ++i) {
-        std::fprintf(stderr, "[unthemidator][crash]   #%02u 0x%p\n", i, frames[i]);
+        printer.print(i, frames[i], reinterpret_cast<DWORD64>(frames[i]));
     }
 
     std::fflush(stderr);
