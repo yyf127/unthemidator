@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "c_emulator.hpp"
-#include "hooks.hpp"
 #include "windows.hpp"
 
 #include "../memory/c_memory_manager.hpp"
@@ -216,15 +215,15 @@ static bool dispatch_hook(uc_engine *uc, const uint64_t address, c_emulator_ctx*
                     static_cast<unsigned long long>(ret_addr));
             }
 
-            ctx->set_pc(address);
-            hooks::vm_enter(ctx);
+            // Record the dispatch only. hooks::vm_enter() (and the
+            // initialize_runtime_regions() it may trigger) performs uc_mem_read/write,
+            // which is not safe from inside a Unicorn hook: it corrupts the engine's
+            // internal state and segfaults the process. The bookkeeping that matters
+            // here is the observed entry address, which is cheap and side-effect free.
+            unpacker->note_vm_entry(address);
 
-            if (ctx->is_stopped()) {
-                uc_emu_stop(uc);
-                return false;
-            }
-
-            // vm_enter consumes no arguments: pop the return address like a RET.
+            // Treat it as a completed call: pop the return address like a RET.
+            ctx->set_result(0);
             sp += is_x86 ? sizeof(uint32_t) : sizeof(uint64_t);
             ctx->set_x86_reg_value(sp_reg, sp);
             ctx->set_pc(ret_addr);
