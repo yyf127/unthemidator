@@ -59,6 +59,7 @@ namespace hooks {
 
     void dummy_function(const c_emulator_ctx*ctx);
     void dummy_true_function(const c_emulator_ctx*ctx);
+    void suppress_exit(const c_emulator_ctx*ctx);
 
     void vm_enter(const c_emulator_ctx*ctx);
 

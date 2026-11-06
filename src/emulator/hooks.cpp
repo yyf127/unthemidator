@@ -905,6 +905,16 @@ void hooks::dummy_true_function(const c_emulator_ctx *ctx) {
     ctx->set_result(1);
 }
 
+void hooks::suppress_exit(const c_emulator_ctx *ctx) {
+    // The guest asked to terminate the process. Honour the request only in the sense
+    // of recording it; actually exiting would discard the in-progress dump.
+    const auto code = ctx->get_arg(0);
+    std::cout << "[unthemidator][fix] suppressed process exit (code=0x" << std::hex
+              << code << std::dec << ")" << std::endl;
+
+    ctx->set_result(0);
+}
+
 void hooks::vm_enter(const c_emulator_ctx *ctx) {
     const auto vm_enter_address = ctx->get_pc();
 

@@ -237,6 +237,14 @@ int main(int argc, char *argv[]) {
                     { "GetVersion", { hooks::get_version, 0 } },
                     { "VirtualAlloc", { hooks::virtual_alloc, 4 } },
                     { "GetCurrentDirectoryW", { hooks::get_current_dir, 2 } },
+                    // FIX: ExitProcess/TerminateProcess are called by Themida as an
+                    // anti-analysis reaction. Terminating the host process would throw
+                    // away the entire dump, so report the call and refuse to exit.
+                    { "ExitProcess", { hooks::suppress_exit, 1 } },
+                    { "TerminateProcess", { hooks::suppress_exit, 2 } },
+                    { "ExitThread", { hooks::suppress_exit, 1 } },
+                    { "FatalExit", { hooks::suppress_exit, 1 } },
+                    { "RaiseException", { hooks::raise_exception, 4 } },
                     { "MultiByteToWideChar", { hooks::dummy_function, 6 } },
                     { "WideCharToMultiByte", { hooks::dummy_function, 8 } },
                     { "GetVolumeInformationA", { hooks::get_volume_information_a, 8 } },
@@ -402,6 +410,26 @@ int main(int argc, char *argv[]) {
 
             for (const auto &[fn_name, iat_entry_orig_va] : functions) {
                 const auto fn_addr = emulator_ctx->get_imports()->resolve_import(module_base, fn_name);
+
+                // FIX: auto-register a fallback hook for imports that have no explicit hook.
+                // Without this, any API the target calls that is not in the hard-coded
+                // api_hooks table lands on an unhooked dummy slot, which triggers
+                // "unexpected bp!" and aborts startup. Log the name so unresolved
+                // dependencies become visible instead of silently returning garbage.
+                if (fn_addr && emulator_ctx->get_hook(fn_addr) == nullptr) {
+                    const auto api_name = fn_name;
+                    const auto module_name = mod_name;
+                    emulator_ctx->add_hook(fn_addr, fn_name,
+                        [api_name, module_name](c_emulator_ctx* ctx) {
+                            static int s_reported = 0;
+                            if (s_reported++ < 64) {
+                                std::cout << "[unthemidator][fix] unhandled API: "
+                                          << module_name << "!" << api_name << " -> 0"
+                                          << std::endl;
+                            }
+                            ctx->set_result(0);
+                        }, 0);
+                }
 
                 std::vector<uint8_t> iat_entry(pe_image->get_ptr_size(), 0);
 
