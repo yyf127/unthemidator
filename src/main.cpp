@@ -13,7 +13,48 @@
 #include "unpacker/c_themida_unpacker.hpp"
 #include "pe/c_pe_builder.hpp"
 
+#ifdef _WIN32
+#include <windows.h>
+#include <dbghelp.h>
+
+// A crash inside the emulator gives no stack and (with stdout buffered) no clue about
+// where it happened. Install a filter that reports the faulting address and walks the
+// stack, then re-raises so behaviour is otherwise unchanged.
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
+    const auto* record = info->ExceptionRecord;
+
+    std::fprintf(stderr,
+        "\n[unthemidator][crash] exception 0x%08lX at 0x%p\n",
+        static_cast<unsigned long>(record->ExceptionCode),
+        record->ExceptionAddress);
+
+    for (DWORD i = 0; i < record->NumberParameters && i < 2; ++i) {
+        std::fprintf(stderr, "[unthemidator][crash]   param[%lu] = 0x%p\n",
+            static_cast<unsigned long>(i),
+            reinterpret_cast<void*>(record->ExceptionInformation[i]));
+    }
+
+    const auto process = GetCurrentProcess();
+    SymInitialize(process, nullptr, TRUE);
+
+    std::vector<void*> frames(64);
+    const auto captured = CaptureStackBackTrace(0, static_cast<DWORD>(frames.size()),
+        frames.data(), nullptr);
+
+    std::fprintf(stderr, "[unthemidator][crash] %u frames:\n", captured);
+    for (unsigned i = 0; i < captured; ++i) {
+        std::fprintf(stderr, "[unthemidator][crash]   #%02u 0x%p\n", i, frames[i]);
+    }
+
+    std::fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 int main(int argc, char *argv[]) {
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(crash_filter);
+#endif
     struct s_cli_options : s_unpacker_options {
         std::string m_output_path;
         std::string m_imports_path;
