@@ -473,7 +473,23 @@ void c_emulator_ctx::drain_region_protects() {
 
             unpacker->on_region_made_writable(request.m_address, request.m_size);
         } else {
+            // The size comes from guest VirtualProtect arguments; guard against an
+            // absurd value, which would make on_region_save allocate that many bytes
+            // (and read past the emulated address space).
+            constexpr uint32_t k_max_region = 0x40000000; // 1 GiB
+            if (request.m_size == 0 || request.m_size > k_max_region) {
+                printf("[unthemidator][fix] region save 0x%llX with implausible size 0x%X; skipping\n",
+                    static_cast<unsigned long long>(request.m_address), request.m_size);
+                continue;
+            }
+
             unpacker->on_region_save(request.m_address, request.m_size);
+
+            static int s_saves = 0;
+            if (s_saves++ % 16 == 0) {
+                printf("[unthemidator][diag] region save 0x%llX size=0x%X (total=%d)\n",
+                    static_cast<unsigned long long>(request.m_address), request.m_size, s_saves);
+            }
         }
     }
 }
