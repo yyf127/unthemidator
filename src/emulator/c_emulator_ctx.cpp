@@ -779,37 +779,31 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                 break;
             }
 
-            // FIX: service an unmapped access recorded by the hook. uc_mem_map() must
-            // not be called from inside a hook callback, so the hook only stores the
-            // address in m_pending_unmapped and we map it here, back in normal context.
-            static int s_on_demand_pages = 0;
+            // FIX: an unmapped access is a genuine access violation on real Windows.
+            // Dispatch it through the guest's own exception handlers instead of either
+            // aborting or blindly mapping memory. Themida installs a VEH precisely to
+            // observe these, and its runtime logic depends on receiving them.
             if (result == UC_ERR_READ_UNMAPPED || result == UC_ERR_WRITE_UNMAPPED ||
                 result == UC_ERR_FETCH_UNMAPPED) {
-
-                // Determine the address to back with memory:
-                //  - a fetch fault means the PC itself is unmapped
-                //  - a read/write fault is reported by the hook in m_pending_unmapped
-                auto fault = m_pending_unmapped != 0 ? m_pending_unmapped : 0;
+                auto fault = m_pending_unmapped != 0 ? m_pending_unmapped : get_pc();
                 m_pending_unmapped = 0;
 
-                if (result == UC_ERR_FETCH_UNMAPPED) {
-                    fault = get_pc();
-                }
-
-                if (s_on_demand_pages < 65536 && fault >= 0x10000) {
-                    const auto page = fault & ~0xFFFULL;
-
-                    if (uc_mem_map(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK) {
-                        ++s_on_demand_pages;
-                        if (s_on_demand_pages <= 12) {
-                            printf("[unthemidator][fix] on-demand mapped page 0x%llX (fault=0x%llX err=%d)\n",
-                                static_cast<unsigned long long>(page),
+                if (!m_exception_handlers.empty() && fault >= 0x10000) {
+                    static int s_av_dispatched = 0;
+                    if (s_av_dispatched < 100000) {
+                        ++s_av_dispatched;
+                        if (s_av_dispatched <= 16) {
+                            printf("[unthemidator][fix] access violation at 0x%llX (err=%d) -> VEH\n",
                                 static_cast<unsigned long long>(fault),
                                 static_cast<int>(result));
                         }
-                        set_pc(fault);
-                        start = fault;
+
+                        // 0xC0000005 = STATUS_ACCESS_VIOLATION
+                        raise_exception(0xC0000005);
                         result = UC_ERR_OK;
+
+                        const auto resume = get_pc();
+                        start = resume;
                         continue;
                     }
                 }
