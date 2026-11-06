@@ -131,6 +131,60 @@ void c_themida_unpacker::startup() {
 
     m_vm_handlers.emplace(m_real_entry_address, vm_enter);
 
+    // FIX: discover the *remaining* VM trampolines before running the runtime.
+    // decompress_vms() also scans for them, but it runs after startup() has already
+    // finished (or faulted). Themida dispatches through these stubs while the runtime
+    // initialises, so without a hook each one falls into dispatch_hook(), which hands
+    // back a poison handle. The runtime then derives addresses from that handle and
+    // jumps into unmapped or stack memory (observed: pc=0x3ECFE8, error 10).
+    // Scanning here patches each stub to INT3 and registers hooks::vm_enter.
+    {
+        const auto &mapped_image = m_memory_manager->get_mapped_image();
+        uint16_t section_idx = 0;
+        const auto before = m_vm_trampolines.size();
+
+        for (const auto &section : m_pe_image->get_sections()) {
+            section_idx++;
+
+            if (!(section.characteristics & unthemidator::pe::k_scn_mem_execute)) {
+                continue;
+            }
+
+            if (section.virtual_address + section.virtual_size > mapped_image.size()) {
+                continue;
+            }
+
+            std::vector section_dump(mapped_image.begin() + section.virtual_address,
+                mapped_image.begin() + section.virtual_address + section.virtual_size);
+
+            find_vm_trampolines(m_memory_manager->get_image_base() + section.virtual_address,
+                section_dump, section_idx == 1);
+        }
+
+        std::cout << "[unthemidator][startup] discovered " << (m_vm_trampolines.size() - before)
+                  << " VM trampolines before runtime start" << std::endl;
+
+        // patch each newly found VM enter into an INT3 hook so the runtime gets a
+        // real handler instead of an unhooked-call poison value
+        for (auto &trampoline : m_vm_trampolines) {
+            if (trampoline.m_is_packed) {
+                // packed VM enters are handled by the decompression pass
+                continue;
+            }
+
+            std::vector<uint8_t> bp_prologue(4, 0xCC);
+            trampoline.m_prologue = std::vector<uint8_t>(4, 0);
+
+            uc_mem_read(m_emulator_ctx->get_uc(), trampoline.m_vm_enter_address,
+                trampoline.m_prologue.data(), trampoline.m_prologue.size());
+
+            uc_mem_write(m_emulator_ctx->get_uc(), trampoline.m_vm_enter_address,
+                bp_prologue.data(), bp_prologue.size());
+
+            m_emulator_ctx->add_hook(trampoline.m_vm_enter_address, "potential_entry", hooks::vm_enter);
+        }
+    }
+
     // add return address so we know where execution ends
     const auto is_x86 = m_emulator_ctx->get_arch() == e_architecture::k_x86;
     const auto sp_reg = is_x86 ? UC_X86_REG_ESP : UC_X86_REG_RSP;
