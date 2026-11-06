@@ -402,6 +402,10 @@ void c_themida_unpacker::on_region_save(const uint64_t address, const uint32_t s
             uc_mem_write(m_emulator_ctx->get_uc(), trampoline.m_vm_enter_address, bp_prologue.data(), bp_prologue.size());
 
             m_emulator_ctx->add_hook(trampoline.m_vm_enter_address, "potential_entry", hooks::vm_enter);
+
+            printf("[unthemidator][diag] vm trampoline: jmp@0x%llX -> vmenter@0x%llX (patched INT3)\n",
+                static_cast<unsigned long long>(trampoline.m_trampoline_address),
+                static_cast<unsigned long long>(trampoline.m_vm_enter_address));
         }
 
         // apply NX protection so when emulator reaches OEP, it'd immediately throw
