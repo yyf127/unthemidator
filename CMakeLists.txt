@@ -87,6 +87,11 @@ target_link_libraries(unthemidator PRIVATE
         project_warnings
 )
 
+if (WIN32)
+    # dbghelp: the crash filter walks the stack and resolves symbols.
+    target_link_libraries(unthemidator PRIVATE dbghelp)
+endif()
+
 target_compile_features(unthemidator PRIVATE cxx_std_20)
 
 set_target_properties(unthemidator PROPERTIES
