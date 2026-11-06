@@ -860,6 +860,11 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
             if (result == UC_ERR_READ_UNMAPPED || result == UC_ERR_WRITE_UNMAPPED ||
                 result == UC_ERR_FETCH_UNMAPPED) {
                 const auto fault_pc = get_pc();
+                // The block above may have consumed and cleared m_pending_unmapped; when
+                // it did not run (different fault class) the recorded address is still
+                // here and is the most precise operand address we have.
+                const auto fault = m_pending_unmapped != 0 ? m_pending_unmapped : fault_pc;
+                m_pending_unmapped = 0;
 
                 // A FETCH towards a very low address means the guest called a NULL
                 // (or poison) function pointer. Emulate the call as a no-op: pop the
