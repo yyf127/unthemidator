@@ -800,7 +800,7 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                     const auto ret_addr = is_x86 ? read<uint32_t>(sp).value_or(0)
                                                  : read<uint64_t>(sp).value_or(0);
 
-                    if (ret_addr > 0x10000) {
+                    if (ret_addr != 0) {
                         ++s_null_calls;
                         if (s_null_calls <= 12) {
                             printf("[unthemidator][fix] NULL call at 0x%llX, returning to 0x%llX\n",
@@ -862,7 +862,10 @@ void c_emulator_ctx::single_step(std::function<mem_callback_t> on_mem) {
         const auto pc = get_pc();
         bool recovered = false;
 
-        if (err == UC_ERR_FETCH_PROT || err == UC_ERR_FETCH_UNMAPPED) {
+        // Never try to "recover" by granting execute rights to the NULL page: that
+        // just sends the guest marching through zero-filled memory. Treat it as a
+        // completed null call instead (emulate() already handles the ret).
+        if (pc >= 0x10000 && (err == UC_ERR_FETCH_PROT || err == UC_ERR_FETCH_UNMAPPED)) {
             // attempt to grant execute permission on the containing page
             if (const auto page = pc & ~0xFFFULL; uc_mem_protect(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK) {
                 if (emulate(pc, 0, 1) == UC_ERR_OK) {
@@ -903,6 +906,15 @@ void c_emulator_ctx::run(const uint64_t start, const uint64_t end, std::function
             reinterpret_cast<void*>(+[](uc_engine* uc, const uc_mem_type type, const uint64_t address,
                                         const int /*size*/, const int64_t /*value*/, void* /*user*/) -> bool {
                 if (s_on_demand_pages >= 65536) {
+                    return false;
+                }
+
+                // Do NOT back the low NULL page with memory. A fetch there means the
+                // guest called a null/poison function pointer; letting the fault reach
+                // emulate() lets it be treated as a completed call instead of us
+                // single-stepping through a mile of zero-filled address space until we
+                // hit an unmappable page and die with UC_ERR_FETCH_PROT.
+                if (address < 0x10000) {
                     return false;
                 }
 
