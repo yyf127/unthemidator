@@ -50,10 +50,27 @@ static std::optional<uint64_t> memory_operand_address(uc_engine* uc, ZydisDecode
             continue;
         }
 
-        // Rebuild the effective address from the live register values: Zydis computes
-        // the address from a register context we do not maintain, so read the base and
-        // index registers straight out of Unicorn.
-        uint64_t value = static_cast<uint64_t>(operand.mem.disp);
+        // Preferred path: let Zydis compute the address. It already accounts for
+        // base/index/scale/displacement and the RIP-relative case, and it is the API
+        // that stays correct across Zydis versions.
+        uint64_t address = 0;
+        if (ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&instruction, &operand, pc, &address))) {
+            return address;
+        }
+
+        // Fallback: rebuild the effective address manually from the live registers.
+        // Zydis computes addresses from a register context we do not maintain, so read
+        // the base and index registers straight out of Unicorn.
+        uint64_t value = 0;
+        // In recent Zydis releases `mem.disp` is a struct (has_displacement/value);
+        // in older ones it is a plain integer. Support both.
+#if defined(ZYDIS_VERSION) && (ZYDIS_VERSION >= 0x00050000)
+        if (operand.mem.disp.has_displacement) {
+            value = static_cast<uint64_t>(operand.mem.disp.value);
+        }
+#else
+        value = static_cast<uint64_t>(operand.mem.disp);
+#endif
 
         const auto read_reg = [&](const ZydisRegister reg, uint64_t& out) -> bool {
             if (reg == ZYDIS_REGISTER_NONE) {
