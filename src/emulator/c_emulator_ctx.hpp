@@ -141,6 +141,11 @@ public:
     uint64_t allocate_virtual(uint64_t address, uint64_t size, uint32_t type);
     bool free_virtual(uint64_t address, uint64_t size, uint32_t type);
 
+    // FIX: commit a single page inside a region the guest reserved but never
+    // committed, so stray accesses to such pages behave like real memory instead
+    // of aborting the emulation.
+    bool commit_reserved_page(uint64_t address);
+
     void initialize_windows_ldr() const;
 private:
     struct s_heap_allocation {

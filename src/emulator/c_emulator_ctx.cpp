@@ -788,6 +788,21 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                 auto fault = m_pending_unmapped != 0 ? m_pending_unmapped : get_pc();
                 m_pending_unmapped = 0;
 
+                // If the address falls inside a region the guest reserved but has not
+                // committed yet, commit that page. Guest code then proceeds normally,
+                // exactly as it would after a real VirtualAlloc(MEM_COMMIT).
+                if (fault >= 0x10000 && commit_reserved_page(fault)) {
+                    static int s_auto_commits = 0;
+                    if (s_auto_commits++ < 16) {
+                        printf("[unthemidator][fix] committed reserved page for 0x%llX\n",
+                            static_cast<unsigned long long>(fault));
+                    }
+                    set_pc(fault);
+                    start = fault;
+                    result = UC_ERR_OK;
+                    continue;
+                }
+
                 if (!m_exception_handlers.empty() && fault >= 0x10000) {
                     static int s_av_dispatched = 0;
                     if (s_av_dispatched < 100000) {
@@ -1209,6 +1224,38 @@ uint64_t c_emulator_ctx::allocate_virtual(const uint64_t address, const uint64_t
     }
 
     return entry->first + first_page * 0x1000;
+}
+
+bool c_emulator_ctx::commit_reserved_page(const uint64_t address) {
+    auto entry = m_virtual_allocations.upper_bound(address);
+
+    if (entry == m_virtual_allocations.begin()) {
+        return false;
+    }
+
+    --entry;
+
+    const auto capacity = entry->second.m_committed_pages.size() * 0x1000;
+
+    if (address < entry->first || address >= entry->first + capacity) {
+        return false;
+    }
+
+    const auto page_index = (address - entry->first) / 0x1000;
+
+    if (entry->second.m_committed_pages[page_index]) {
+        return false;
+    }
+
+    const auto page_address = entry->first + page_index * 0x1000;
+
+    if (uc_mem_map(m_uc, page_address, 0x1000, UC_PROT_ALL) != UC_ERR_OK) {
+        return false;
+    }
+
+    entry->second.m_committed_pages[page_index] = true;
+
+    return true;
 }
 
 bool c_emulator_ctx::free_virtual(const uint64_t address, const uint64_t size, const uint32_t type) {
