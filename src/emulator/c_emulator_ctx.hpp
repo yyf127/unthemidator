@@ -59,7 +59,9 @@ public:
     [[nodiscard]] c_themida_unpacker* get_themida_unpacker() const;
 
     // Queue a VirtualProtect-style request for servicing outside the hook callback.
-    void queue_region_protect(uint64_t address, uint32_t size, uint32_t new_prot, uint64_t old_prot_ptr);
+    // Const because the protection hooks receive a const context; only the (mutable)
+    // queue is touched.
+    void queue_region_protect(uint64_t address, uint32_t size, uint32_t new_prot, uint64_t old_prot_ptr) const;
 
     // Service queued region-protect requests. Must only be called from emulator
     // context (never from inside a hook).
@@ -206,7 +208,7 @@ private:
         uint32_t m_new_prot = 0;
         uint64_t m_old_prot_ptr = 0;
     };
-    std::deque<s_pending_region_protect> m_pending_region_protects{};
+    mutable std::deque<s_pending_region_protect> m_pending_region_protects{};
 
     std::unordered_set<uint64_t> m_exception_handlers{};
 
