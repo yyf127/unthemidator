@@ -251,12 +251,16 @@ void hooks::get_proc_address(const c_emulator_ctx *ctx) {
 }
 
 void hooks::get_file_attributes_ex_w(c_emulator_ctx *ctx) {
-    std::wstring path;
-    const auto readable = read_conversion_input(ctx, ctx->get_arg(0), -1, path);
+    std::vector<char16_t> path;
 
-    if (readable) {
-        std::string narrow(path.begin(), path.end());
-        printf("[unthemidator][runtime] GetFileAttributesExW: %s\n", narrow.c_str());
+    if (read_conversion_input(ctx, ctx->get_arg(0), -1, path)) {
+        try {
+            std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter;
+            const auto text = converter.to_bytes(path.data());
+            printf("[unthemidator][runtime] GetFileAttributesExW: %s\n", text.c_str());
+        } catch (const std::range_error &) {
+            printf("[unthemidator][runtime] GetFileAttributesExW: <invalid UTF-16 path>\n");
+        }
     }
 
     // Report the file as absent: that is the honest answer for a file the host does
