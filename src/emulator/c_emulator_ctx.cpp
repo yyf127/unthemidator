@@ -859,8 +859,38 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                     }
                 }
 
-                printf("[unthemidator][fix] unmapped access at pc=0x%llX (uc_err=%d), stopping\n",
-                    static_cast<unsigned long long>(fault_pc), static_cast<int>(result));
+                printf("[unthemidator][fix] unmapped access at pc=0x%llX (uc_err=%d, pending=0x%llX), stopping\n",
+                    static_cast<unsigned long long>(fault_pc), static_cast<int>(result),
+                    static_cast<unsigned long long>(m_pending_unmapped));
+
+                // diag: report whether the page is present in Unicorn's map list
+                {
+                    uc_mem_region* regions = nullptr;
+                    uint32_t count = 0;
+                    const auto page = fault_pc & ~0xFFFULL;
+                    bool present = false;
+
+                    if (uc_mem_regions(m_uc, &regions, &count) == UC_ERR_OK && regions) {
+                        printf("[unthemidator][diag] page 0x%llX: %s (total regions=%u)\n",
+                            static_cast<unsigned long long>(page), "checked", count);
+                        for (uint32_t i = 0; i < count; ++i) {
+                            if (regions[i].begin <= page && page < regions[i].end) {
+                                present = true;
+                                printf("[unthemidator][diag]   inside region 0x%llX-0x%llX prot=%u\n",
+                                    static_cast<unsigned long long>(regions[i].begin),
+                                    static_cast<unsigned long long>(regions[i].end),
+                                    regions[i].perms);
+                                break;
+                            }
+                        }
+                        uc_free(regions);
+                    }
+
+                    if (!present) {
+                        printf("[unthemidator][diag]   page NOT present in any mapped region\n");
+                    }
+                }
+
                 result = UC_ERR_OK;
                 break;
             }
