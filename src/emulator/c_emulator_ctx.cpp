@@ -703,7 +703,12 @@ const s_hooked_function* c_emulator_ctx::get_hook(const uint64_t address) {
 uint64_t c_emulator_ctx::map_dummy_module(const std::vector<uint8_t> &image, const std::string &name) const {
     const auto image_base = m_memory_manager->allocate_helper_stub(static_cast<uint32_t>(image.size()));
 
-    auto err = uc_mem_map(m_uc, image_base, page_up(image.size(), 0x1000), UC_PROT_READ);
+    // FIX: map dummy modules as fully accessible (incl. execute).
+    // Reason: when an API call is not hooked (or its return address is malformed),
+    // the emulator may attempt to fetch/execute instructions inside the dummy module.
+    // With UC_PROT_READ only, that raises UC_ERR_FETCH_PROT (14) and aborts startup
+    // with "failed to start single step emulation: 14".
+    auto err = uc_mem_map(m_uc, image_base, page_up(image.size(), 0x1000), UC_PROT_ALL);
 
     if (err != UC_ERR_OK) {
         throw std::runtime_error("emulator ctx: failed to map dummy module: " + std::to_string(err));
@@ -793,8 +798,29 @@ void c_emulator_ctx::single_step(std::function<mem_callback_t> on_mem) {
     uc_ctl_flush_tb(m_uc);
 
     if (const auto err = emulate(get_pc(), 0, 1); err != UC_ERR_OK) {
-        throw std::runtime_error("emulator ctx: failed to start single step emulation: " +
-            std::to_string(err));
+        // FIX: tolerate unmapped/fetch-protected PCs during single-step.
+        // Some Themida builds run code from regions that are not (yet) executable
+        // or that live outside the image. Aborting here loses otherwise useful dumps.
+        // If we cannot single-step, try to make the current page executable once,
+        // and if that still fails, stop gracefully instead of throwing.
+        const auto pc = get_pc();
+        bool recovered = false;
+
+        if (err == UC_ERR_FETCH_PROT || err == UC_ERR_FETCH_UNMAPPED) {
+            // attempt to grant execute permission on the containing page
+            if (const auto page = pc & ~0xFFFULL; uc_mem_protect(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK) {
+                if (emulate(pc, 0, 1) == UC_ERR_OK) {
+                    recovered = true;
+                }
+            }
+        }
+
+        if (!recovered) {
+            printf("[unthemidator][fix] single step at 0x%llX failed (uc_err=%d), stopping gracefully\n",
+                static_cast<unsigned long long>(pc), static_cast<int>(err));
+            set_pc(pc);
+            return;
+        }
     }
 
     if (on_mem) {
