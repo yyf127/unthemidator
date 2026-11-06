@@ -1,4 +1,5 @@
 #include <array>
+#include <exception>
 #include <fstream>
 #include <sstream>
 #include <utility>
@@ -264,7 +265,38 @@ static bool dispatch_hook(uc_engine *uc, const uint64_t address, c_emulator_ctx*
 
     // both INT3 and protected-fetch hooks see the actual hooked address.
     ctx->set_pc(address);
-    hook->m_function(ctx);
+
+    // A hook must never let an exception escape: this runs on top of Unicorn's own
+    // frames, and unwinding through them corrupts the engine (the host dies with
+    // SIGSEGV). Contain any failure, report it, and answer the call as a no-op so
+    // the caller continues on a handled path.
+    std::exception_ptr hook_error;
+    try {
+        hook->m_function(ctx);
+    } catch (...) {
+        hook_error = std::current_exception();
+    }
+
+    if (hook_error != nullptr) {
+        static int s_hook_faults = 0;
+        if (s_hook_faults++ < 16) {
+            const char* what = "unknown";
+            try {
+                std::rethrow_exception(hook_error);
+            } catch (const std::exception& e) {
+                what = e.what();
+            } catch (...) {
+            }
+            printf("[unthemidator][fix] hook %s at 0x%llX raised (%s); treating call as no-op\n",
+                hook->m_name.c_str(), static_cast<unsigned long long>(address), what);
+        }
+
+        ctx->set_result(0);
+        sp += is_x86 ? sizeof(uint32_t) : sizeof(uint64_t);
+        ctx->set_x86_reg_value(sp_reg, sp);
+        ctx->set_pc(ret_addr);
+        return true;
+    }
 
     if (ctx->is_stopped()) {
         uc_emu_stop(uc);
