@@ -162,7 +162,13 @@ namespace {
 
     void handle_virtual_protection(const c_emulator_ctx *ctx, const uint64_t address, const uint32_t size,
         const uint32_t new_prot, const uint64_t old_prot_ptr) {
+        // Only queue the request. Servicing it here would mean reading and writing
+        // guest memory from inside a Unicorn hook, which corrupts the engine (the
+        // host segfaults after a burst of VirtualProtect calls). emulate() drains
+        // the queue between steps, where the engine is safe to touch.
         //
+        // The range filter is kept here so obviously irrelevant requests never enter
+        // the queue; drain_region_protects() re-checks the same conditions.
         const auto memory = ctx->get_memory();
         const auto image_base = memory->get_image_base();
         const auto image_size = memory->get_image_size();
@@ -176,18 +182,7 @@ namespace {
             return;
         }
 
-        if (new_prot != k_protection_marker) {
-            if (uc_mem_write(ctx->get_uc(), old_prot_ptr,
-                             &k_protection_marker, sizeof(k_protection_marker)) != UC_ERR_OK) {
-                //
-                throw std::runtime_error("failed to write old memory protection");
-            }
-
-            ctx->get_themida_unpacker()->on_region_made_writable(address, size);
-            return;
-        }
-
-        ctx->get_themida_unpacker()->on_region_save(address, size);
+        ctx->queue_region_protect(address, size, new_prot, old_prot_ptr);
     }
 }
 
