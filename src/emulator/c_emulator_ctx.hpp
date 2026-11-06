@@ -2,6 +2,7 @@
 #define UNTHEMIDATOR_EMULATOR_CTX_HPP
 
 #include <unicorn/unicorn.h>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <unordered_set>
@@ -56,6 +57,13 @@ public:
 
     void set_themida_unpacker(c_themida_unpacker* unpacker);
     [[nodiscard]] c_themida_unpacker* get_themida_unpacker() const;
+
+    // Queue a VirtualProtect-style request for servicing outside the hook callback.
+    void queue_region_protect(uint64_t address, uint32_t size, uint32_t new_prot, uint64_t old_prot_ptr);
+
+    // Service queued region-protect requests. Must only be called from emulator
+    // context (never from inside a hook).
+    void drain_region_protects();
 
     [[nodiscard]] uint64_t get_x86_reg_value(uc_x86_reg reg) const;
     void set_x86_reg_value(uc_x86_reg reg, uint64_t value) const;
@@ -185,6 +193,20 @@ private:
     // and serviced from emulate(), because mapping memory inside a hook callback is
     // unsupported and corrupts the engine state.
     uint64_t m_pending_unmapped = 0;
+
+    // FIX: VirtualProtect / NtProtectVirtualMemory hooks must not perform Unicorn
+    // memory operations directly - the region bookkeeping (on_region_save /
+    // on_region_made_writable) reads and writes guest memory, and doing that inside a
+    // hook corrupts the engine (observed as a SIGSEGV after a burst of VirtualProtect
+    // calls). The hooks enqueue their request here; emulate() drains the queue between
+    // emulation steps, where the engine is safe to touch.
+    struct s_pending_region_protect {
+        uint64_t m_address = 0;
+        uint32_t m_size = 0;
+        uint32_t m_new_prot = 0;
+        uint64_t m_old_prot_ptr = 0;
+    };
+    std::deque<s_pending_region_protect> m_pending_region_protects{};
 
     std::unordered_set<uint64_t> m_exception_handlers{};
 
