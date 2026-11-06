@@ -204,7 +204,7 @@ static bool dispatch_hook(uc_engine *uc, const uint64_t address, c_emulator_ctx*
         // Route (b) through the VM entry hook so the runtime observes a real VM call,
         // and answer (a) with the poison handle as before.
         const auto* import = ctx->get_imports()->find_import_by_address(address);
-        const auto* unpacker = ctx->get_themida_unpacker();
+        auto* unpacker = ctx->get_themida_unpacker();
         const auto is_packer_code = unpacker != nullptr && unpacker->is_packer_code_address(address);
 
         if (import == nullptr && is_packer_code) {
