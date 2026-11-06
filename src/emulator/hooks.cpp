@@ -250,6 +250,30 @@ void hooks::get_proc_address(const c_emulator_ctx *ctx) {
     ctx->set_result(address);
 }
 
+void hooks::get_file_attributes_ex_w(c_emulator_ctx *ctx) {
+    std::wstring path;
+    const auto readable = read_conversion_input(ctx, ctx->get_arg(0), -1, path);
+
+    if (readable) {
+        std::string narrow(path.begin(), path.end());
+        printf("[unthemidator][runtime] GetFileAttributesExW: %s\n", narrow.c_str());
+    }
+
+    // Report the file as absent: that is the honest answer for a file the host does
+    // not have, and it keeps probing code on the "not found" branch it already
+    // handles. ERROR_FILE_NOT_FOUND = 2.
+    write_last_error(ctx, 2);
+    ctx->set_result(0);
+}
+
+void hooks::char_lower_w(c_emulator_ctx *ctx) {
+    // CharLowerW(lpsz) returns the same pointer with the first character folded, or
+    // an integer when the input is a plain character. Themida only uses the pointer
+    // form for name mangling, so returning the argument unchanged is behaviourally
+    // equivalent for that use and avoids a fault on a poison pointer.
+    ctx->set_result(ctx->get_arg(0));
+}
+
 void hooks::create_file_a(c_emulator_ctx *ctx) {
     std::vector<char> path;
     const auto readable = read_conversion_input(ctx, ctx->get_arg(0), -1, path);
