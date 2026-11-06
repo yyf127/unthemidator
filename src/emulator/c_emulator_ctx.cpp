@@ -1,7 +1,9 @@
 #include <array>
+#include <deque>
 #include <exception>
 #include <fstream>
 #include <sstream>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -255,11 +257,30 @@ static bool dispatch_hook(uc_engine *uc, const uint64_t address, c_emulator_ctx*
         return true;
     }
 
-    /*
-    if (hook->m_name != "GetProcessHeap" && hook->m_name != "RtlFreeHeap" && hook->m_name != "RtlAllocateHeap" &&
-        hook->m_name != "RtlReAllocateHeap") {
-        printf("[+] calling %s from 0x%llX, ret addr 0x%llX...\n", hook->m_name.c_str(), address, ret_addr);
-    }*/
+    // Trace the last few calls before a crash: a segfault gives no stack, so the
+    // sequence of hooked APIs leading up to it is the only breadcrumb available.
+    // Bounded, and skips the heap APIs that dominate the log.
+    {
+        static int s_call_trace = 0;
+        static std::deque<std::string> s_recent_calls;
+
+        if (hook->m_name != "RtlAllocateHeap" && hook->m_name != "RtlFreeHeap" &&
+            hook->m_name != "RtlReAllocateHeap" && hook->m_name != "GetProcessHeap") {
+            s_recent_calls.push_back(hook->m_name);
+            while (s_recent_calls.size() > 12) {
+                s_recent_calls.pop_front();
+            }
+
+            if (s_call_trace++ % 64 == 0) {
+                std::string joined;
+                for (const auto& name : s_recent_calls) {
+                    joined += name;
+                    joined += ' ';
+                }
+                printf("[unthemidator][diag] call trace: %s\n", joined.c_str());
+            }
+        }
+    }
 
     const auto arg_count = hook->m_arg_count;
 
