@@ -428,6 +428,56 @@ std::shared_ptr<c_imports> c_emulator_ctx::get_imports() const {
     return m_imports;
 }
 
+void c_emulator_ctx::queue_region_protect(const uint64_t address, const uint32_t size,
+    const uint32_t new_prot, const uint64_t old_prot_ptr) {
+    m_pending_region_protects.push_back(s_pending_region_protect{
+        .m_address = address,
+        .m_size = size,
+        .m_new_prot = new_prot,
+        .m_old_prot_ptr = old_prot_ptr,
+    });
+}
+
+void c_emulator_ctx::drain_region_protects() {
+    constexpr uint32_t k_marker = 0x676767;
+
+    while (!m_pending_region_protects.empty()) {
+        const auto request = m_pending_region_protects.front();
+        m_pending_region_protects.pop_front();
+
+        auto* unpacker = get_themida_unpacker();
+
+        if (unpacker == nullptr) {
+            continue;
+        }
+
+        const auto memory = get_memory();
+        const auto image_base = memory->get_image_base();
+        const auto image_size = memory->get_image_size();
+        const auto headers_size = memory->get_pe_image()->get_size_of_headers();
+
+        if (request.m_address < image_base || request.m_address - image_base >= image_size) {
+            continue;
+        }
+
+        if (request.m_address - image_base < headers_size) {
+            continue;
+        }
+
+        // The protection marker distinguishes "region is being made writable" from
+        // "region content is final, save it" - the same convention the hook used.
+        if (request.m_new_prot != k_marker) {
+            if (request.m_old_prot_ptr != 0) {
+                uc_mem_write(m_uc, request.m_old_prot_ptr, &k_marker, sizeof(k_marker));
+            }
+
+            unpacker->on_region_made_writable(request.m_address, request.m_size);
+        } else {
+            unpacker->on_region_save(request.m_address, request.m_size);
+        }
+    }
+}
+
 c_themida_unpacker * c_emulator_ctx::get_themida_unpacker() const {
     return m_themida_unpacker;
 }
@@ -957,6 +1007,10 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
     auto result = UC_ERR_OK;
     try {
         while (!m_stop_requested) {
+            // Service region-protection requests queued by the VirtualProtect hooks.
+            // Safe here: we are outside any Unicorn hook callback.
+            drain_region_protects();
+
             m_hook_resume.reset();
             result = uc_emu_start(m_uc, start, end, 0, count);
 
