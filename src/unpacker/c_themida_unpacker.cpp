@@ -618,6 +618,29 @@ const std::vector<uint8_t>& c_themida_unpacker::get_loader_shellcode() const {
     return m_loader->get_shellcode();
 }
 
+bool c_themida_unpacker::is_packer_code_address(const uint64_t address) const {
+    const auto image_base = m_memory_manager->get_image_base();
+
+    if (address < image_base) {
+        return false;
+    }
+
+    const auto rva = address - image_base;
+
+    for (const auto &section : m_pe_image->get_sections()) {
+        if (rva < section.virtual_address || rva >= section.virtual_address + section.virtual_size) {
+            continue;
+        }
+
+        // The packer's own sections: anything dispatched into these that has no
+        // registered hook is a VM call, not a missing import.
+        return section.name == ".themida" || section.name == ".boot" ||
+               section.name == ".winlice" || section.name == ".taz";
+    }
+
+    return false;
+}
+
 std::string c_themida_unpacker::get_themida_version() const {
     if (m_is_v4) {
         return "v4";
