@@ -478,6 +478,7 @@ int main(int argc, char *argv[]) {
     std::cout << std::endl;
 
     // startup Themida runtime (lightning VM entrypoint)
+    bool startup_faulted = false;
     try {
         if (!options.m_skip_startup) {
             unpacker->startup();
@@ -485,7 +486,13 @@ int main(int argc, char *argv[]) {
     } catch (std::runtime_error &e) {
         std::cerr << "[unthemidator] failed to startup: " << e.what() << std::endl;
 
-        return 1; // startup is a critical stage, if it fails, we can't proceed further
+        // Do NOT bail out here. Reaching the runtime and crossing some regions is
+        // still progress: the region snapshots captured so far are what the PE
+        // rebuild stage writes out. Aborting would discard a partially unpacked
+        // image that may well be runnable (Themida's VM handlers are only needed to
+        // recover entry points, not to produce the sections themselves).
+        std::cerr << "[unthemidator] continuing with the regions captured so far" << std::endl;
+        startup_faulted = true;
     }
 
     std::cout << std::endl;
