@@ -557,8 +557,17 @@ void hooks::get_thread_context(c_emulator_ctx *ctx) {
 
     if (const auto flags = ctx->read<uint32_t>(ctx_ptr + flags_offset);
         !flags || (*flags & 0x10) == 0) {
-        //
-        throw std::runtime_error("invalid context flags");
+        // Unusable CONTEXT flags. Do not throw: an exception escaping a hook callback
+        // corrupts Unicorn's engine state and the host segfaults. Report failure the
+        // way GetThreadContext does (return 0 / last error set).
+        static int s_bad_context_flags = 0;
+        if (s_bad_context_flags++ < 8) {
+            printf("[unthemidator][runtime] GetThreadContext: unexpected flags (0x%X), returning failure\n",
+                flags ? *flags : 0);
+        }
+        write_last_error(ctx, 0x57); // ERROR_INVALID_PARAMETER
+        ctx->set_result(0);
+        return;
     }
 
     if (is_x64) {
