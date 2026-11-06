@@ -618,6 +618,29 @@ const std::vector<uint8_t>& c_themida_unpacker::get_loader_shellcode() const {
     return m_loader->get_shellcode();
 }
 
+void c_themida_unpacker::note_vm_entry(const uint64_t address) {
+    if (m_known_vm_enters.insert(address).second) {
+        printf("[unthemidator][runtime] observed VM entry - 0x%llX\n",
+            static_cast<unsigned long long>(address));
+    }
+
+    // Mirror what on_original_pe_callback() does for a trampoline hit: remember the
+    // dispatch so a later stage can treat it as a code path into the original PE.
+    for (const auto &trampoline : m_vm_trampolines) {
+        if (trampoline.m_vm_enter_address == address) {
+            if (m_called_addresses.empty() ||
+                m_called_addresses.back() != trampoline.m_trampoline_address) {
+                m_called_addresses.push_back(trampoline.m_trampoline_address);
+            }
+            return;
+        }
+    }
+
+    if (m_called_addresses.empty() || m_called_addresses.back() != address) {
+        m_called_addresses.push_back(address);
+    }
+}
+
 bool c_themida_unpacker::is_packer_code_address(const uint64_t address) const {
     const auto image_base = m_memory_manager->get_image_base();
 
