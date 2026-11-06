@@ -789,19 +789,24 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                 // A FETCH towards a very low address means the guest called a NULL
                 // (or poison) function pointer. Emulate the call as a no-op: pop the
                 // return address off the stack, set the result register to 0 and
-                // continue at the caller. This is how a real "unimplemented import"
-                // should behave and keeps the unpacker moving.
-                if (result == UC_ERR_FETCH_UNMAPPED && fault_pc < 0x10000) {
+                // continue at the caller. Bounded, so a pathological call chain can
+                // never spin forever.
+                static int s_null_calls = 0;
+                if (result == UC_ERR_FETCH_UNMAPPED && fault_pc < 0x10000 &&
+                    s_null_calls < 4096) {
                     const auto is_x86 = get_arch() == e_architecture::k_x86;
                     const auto sp_reg = is_x86 ? UC_X86_REG_ESP : UC_X86_REG_RSP;
                     const auto sp = get_x86_reg_value(sp_reg);
                     const auto ret_addr = is_x86 ? read<uint32_t>(sp).value_or(0)
                                                  : read<uint64_t>(sp).value_or(0);
 
-                    if (ret_addr != 0) {
-                        printf("[unthemidator][fix] NULL call at 0x%llX, returning to 0x%llX\n",
-                            static_cast<unsigned long long>(fault_pc),
-                            static_cast<unsigned long long>(ret_addr));
+                    if (ret_addr > 0x10000) {
+                        ++s_null_calls;
+                        if (s_null_calls <= 12) {
+                            printf("[unthemidator][fix] NULL call at 0x%llX, returning to 0x%llX\n",
+                                static_cast<unsigned long long>(fault_pc),
+                                static_cast<unsigned long long>(ret_addr));
+                        }
                         set_result(0);
                         set_x86_reg_value(sp_reg, sp + (is_x86 ? sizeof(uint32_t) : sizeof(uint64_t)));
                         set_pc(ret_addr);
@@ -898,13 +903,6 @@ void c_emulator_ctx::run(const uint64_t start, const uint64_t end, std::function
             reinterpret_cast<void*>(+[](uc_engine* uc, const uc_mem_type type, const uint64_t address,
                                         const int /*size*/, const int64_t /*value*/, void* /*user*/) -> bool {
                 if (s_on_demand_pages >= 65536) {
-                    return false;
-                }
-
-                // Do NOT silently map the low NULL page: a fetch there means the guest
-                // called a null function pointer. Let the fault propagate so emulate()
-                // can emulate the call as a no-op instead of executing garbage.
-                if (address < 0x10000) {
                     return false;
                 }
 
