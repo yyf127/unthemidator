@@ -100,9 +100,20 @@ static bool dispatch_hook(uc_engine *uc, const uint64_t address, c_emulator_ctx*
     const auto ret_addr = is_x86 ? ctx->read<uint32_t>(sp).value() : ctx->read<uint64_t>(sp).value();
 
     if (!hook) {
-        printf("exception thrown - 0x%llX (ret addy 0x%llX)\n", address, ret_addr);
+        // FIX: instead of aborting, treat an unhooked call as a no-op returning 0.
+        // Themida-protected targets often call APIs that are not explicitly hooked;
+        // aborting here loses the otherwise perfectly usable dump.
+        printf("[unthemidator][fix] unhooked call at 0x%llX (ret 0x%llX), skipping\n",
+            static_cast<unsigned long long>(address),
+            static_cast<unsigned long long>(ret_addr));
 
-        throw std::runtime_error("unexpected bp!");
+        ctx->set_result(0);
+
+        sp += is_x86 ? sizeof(uint32_t) : sizeof(uint64_t);
+        ctx->set_x86_reg_value(sp_reg, sp);
+        ctx->set_pc(ret_addr);
+
+        return true;
     }
 
     /*
