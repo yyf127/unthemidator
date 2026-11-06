@@ -783,9 +783,18 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
             // not be called from inside a hook callback, so the hook only stores the
             // address in m_pending_unmapped and we map it here, back in normal context.
             static int s_on_demand_pages = 0;
-            if (m_pending_unmapped != 0) {
-                const auto fault = m_pending_unmapped;
+            if (result == UC_ERR_READ_UNMAPPED || result == UC_ERR_WRITE_UNMAPPED ||
+                result == UC_ERR_FETCH_UNMAPPED) {
+
+                // Determine the address to back with memory:
+                //  - a fetch fault means the PC itself is unmapped
+                //  - a read/write fault is reported by the hook in m_pending_unmapped
+                auto fault = m_pending_unmapped != 0 ? m_pending_unmapped : 0;
                 m_pending_unmapped = 0;
+
+                if (result == UC_ERR_FETCH_UNMAPPED) {
+                    fault = get_pc();
+                }
 
                 if (s_on_demand_pages < 65536 && fault >= 0x10000) {
                     const auto page = fault & ~0xFFFULL;
@@ -793,8 +802,10 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                     if (uc_mem_map(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK) {
                         ++s_on_demand_pages;
                         if (s_on_demand_pages <= 12) {
-                            printf("[unthemidator][fix] on-demand mapped page 0x%llX\n",
-                                static_cast<unsigned long long>(page));
+                            printf("[unthemidator][fix] on-demand mapped page 0x%llX (fault=0x%llX err=%d)\n",
+                                static_cast<unsigned long long>(page),
+                                static_cast<unsigned long long>(fault),
+                                static_cast<int>(result));
                         }
                         set_pc(fault);
                         start = fault;
