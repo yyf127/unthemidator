@@ -293,6 +293,11 @@ int main(int argc, char *argv[]) {
                     { "Sleep", { hooks::dummy_function, 0 } },
                     { "FreeLibrary", { hooks::dummy_function, 1 } },
                     { "CreateFileA", { hooks::create_file_a, 7 } },
+                    // Themida probes file attributes during initialisation; without a
+                    // hook the call returns the poison handle and the resulting "path"
+                    // is walked as a string, derailing startup.
+                    { "GetFileAttributesExW", { hooks::get_file_attributes_ex_w, 3 } },
+                    { "GetFileAttributesExA", { hooks::get_file_attributes_ex_w, 3 } },
                     { "DeviceIoControl", { hooks::dummy_function, 8 } },
                     { "GetEnvironmentVariableA", { hooks::dummy_function, 3 } },
                     { "GetEnvironmentVariableW", { hooks::dummy_function, 3 } },
@@ -343,6 +348,9 @@ int main(int argc, char *argv[]) {
                     { "GetForegroundWindow", { hooks::dummy_true_function, 0 } },
                     { "wsprintfA", { hooks::dummy_function, 2 } },
                     { "wsprintfW", { hooks::dummy_function, 2 } },
+                    // Name-mangling helper; must return the input pointer, not a handle.
+                    { "CharLowerW", { hooks::char_lower_w, 1 } },
+                    { "CharLowerA", { hooks::char_lower_w, 1 } },
                 }
             },
             {
