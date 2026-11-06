@@ -429,7 +429,7 @@ std::shared_ptr<c_imports> c_emulator_ctx::get_imports() const {
 }
 
 void c_emulator_ctx::queue_region_protect(const uint64_t address, const uint32_t size,
-    const uint32_t new_prot, const uint64_t old_prot_ptr) {
+    const uint32_t new_prot, const uint64_t old_prot_ptr) const {
     m_pending_region_protects.push_back(s_pending_region_protect{
         .m_address = address,
         .m_size = size,
