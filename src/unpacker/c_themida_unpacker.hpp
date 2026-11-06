@@ -29,6 +29,11 @@ public:
 
     [[nodiscard]] std::string get_themida_version() const;
 
+    // True when `address` lies inside one of the packer's own sections (.themida /
+    // .boot). Calls that target packer code and have no registered hook are VM
+    // dispatches, not missing imports, and must be routed to hooks::vm_enter.
+    [[nodiscard]] bool is_packer_code_address(uint64_t address) const;
+
     // helper functions, for internal use
     void on_region_save(uint64_t address, uint32_t size);
     void on_region_made_writable(uint64_t address, uint32_t size);
