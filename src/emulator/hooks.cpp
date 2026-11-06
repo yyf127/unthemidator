@@ -393,8 +393,20 @@ void hooks::virtual_alloc(c_emulator_ctx *ctx) {
 }
 
 void hooks::virtual_free(c_emulator_ctx *ctx) {
-    const auto result = ctx->free_virtual(ctx->get_arg(0), ctx->get_arg(1),
-        static_cast<uint32_t>(ctx->get_arg(2)));
+    const auto address = ctx->get_arg(0);
+    const auto size = ctx->get_arg(1);
+    const auto type = static_cast<uint32_t>(ctx->get_arg(2));
+
+    const auto result = ctx->free_virtual(address, size, type);
+
+    // FIX: log VirtualFree calls; an over-eager free is a common cause of later
+    // "unmapped access" faults in regions that should still be present.
+    static int s_logged = 0;
+    if (s_logged++ < 24) {
+        printf("[unthemidator][fix] VirtualFree(0x%llX, 0x%llX, 0x%X) -> %d\n",
+            static_cast<unsigned long long>(address),
+            static_cast<unsigned long long>(size), type, result);
+    }
 
     if (!result) {
         write_last_error(ctx, 87);
@@ -408,6 +420,12 @@ void hooks::virtual_protect(const c_emulator_ctx *ctx) {
     const auto size = static_cast<uint32_t>(ctx->get_arg(1));
     const auto new_prot = static_cast<uint32_t>(ctx->get_arg(2));
     const auto old_prot_ptr = ctx->get_arg(3);
+
+    static int s_logged = 0;
+    if (s_logged++ < 32) {
+        printf("[unthemidator][fix] VirtualProtect(0x%llX, 0x%X, 0x%X)\n",
+            static_cast<unsigned long long>(address), size, new_prot);
+    }
 
     handle_virtual_protection(ctx, address, size, new_prot, old_prot_ptr);
     ctx->set_result(1);
