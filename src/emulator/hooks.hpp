@@ -9,6 +9,11 @@ namespace hooks {
     void get_proc_address(const c_emulator_ctx*ctx);
     void create_file_a(c_emulator_ctx*ctx);
     void create_file_w(c_emulator_ctx*ctx);
+    // Themida probes the filesystem while it initialises; reporting "attribute
+    // lookup failed" is what a machine without the probed file would see.
+    void get_file_attributes_ex_w(c_emulator_ctx*ctx);
+    // Case-folding helper used while mangling module/function names for hashing.
+    void char_lower_w(c_emulator_ctx*ctx);
     void create_file_mapping(c_emulator_ctx*ctx);
     void rtl_allocate_heap(c_emulator_ctx*ctx);
     void rtl_reallocate_heap(c_emulator_ctx*ctx);
