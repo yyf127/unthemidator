@@ -62,6 +62,7 @@ jobs:
           name: unthemidator-win64
           path: |
             build/**/unthemidator.exe
+            build/**/unthemidator.pdb
             static/catalog.json
             static/catalog_32.json
           if-no-files-found: error
