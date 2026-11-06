@@ -906,53 +906,79 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                     static int s_zero_backed = 0;
                     bool backed = false;
 
-                    auto back_page = [&](const uint64_t addr) -> bool {
-                        if (addr >= 0x10000 && commit_reserved_page(addr)) {
-                            return true;
+                    // Bounded retry: if backing a page does not actually make the
+                    // instruction succeed (e.g. the operand address is not any of the
+                    // ones we tried), resuming at the same PC would loop forever.
+                    // Track per-PC retries and give up after a few attempts so the run
+                    // can continue via the normal stop path.
+                    static uint64_t s_last_fault_pc = 0;
+                    static int s_same_pc_retries = 0;
+                    const auto here = get_pc();
+                    bool retry_allowed = true;
+                    if (here == s_last_fault_pc) {
+                        if (++s_same_pc_retries > 8) {
+                            s_same_pc_retries = 0;
+                            s_last_fault_pc = 0;
+                            retry_allowed = false;
                         }
-                        const auto page = addr & ~0xFFFULL;
-                        if (uc_mem_map(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK ||
-                            uc_mem_protect(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK) {
-                            return true;
-                        }
-                        return false;
-                    };
-
-                    // Prefer the recorded fault address; fall back to the registers that
-                    // could serve as base/index for the offending memory operand.
-                    if (const auto pending = m_pending_unmapped) {
-                        if (back_page(pending)) {
-                            backed = true;
-                        }
+                    } else {
+                        s_last_fault_pc = here;
+                        s_same_pc_retries = 0;
                     }
 
-                    if (!backed) {
-                        const uc_x86_reg candidates[] = {
-                            UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX,
-                            UC_X86_REG_ESI, UC_X86_REG_EDI, UC_X86_REG_EBP,
+                    if (retry_allowed) {
+                        // Determine which page to back. `fault` (captured above) is the
+                        // address the memory hook recorded; when it is missing it fell
+                        // back to the instruction pointer, in which case try the
+                        // registers that could act as base/index of the operand.
+                        auto back_page = [&](const uint64_t addr) -> bool {
+                            if (addr == 0) {
+                                return false;
+                            }
+                            if (addr >= 0x10000 && commit_reserved_page(addr)) {
+                                return true;
+                            }
+                            const auto page = addr & ~0xFFFULL;
+                            return uc_mem_map(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK ||
+                                   uc_mem_protect(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK;
                         };
 
-                        for (const auto reg : candidates) {
-                            const auto value = get_x86_reg_value(reg);
-                            if (value != 0 && (value & ~0xFFFULL) != (fault_pc & ~0xFFFULL) &&
-                                back_page(value)) {
-                                backed = true;
-                                break;
+                        const bool fault_is_pc =
+                            (fault & ~0xFFFULL) == (get_pc() & ~0xFFFULL);
+
+                        if (!fault_is_pc && back_page(fault)) {
+                            backed = true;
+                        }
+
+                        if (!backed) {
+                            const uc_x86_reg candidates[] = {
+                                UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX,
+                                UC_X86_REG_ESI, UC_X86_REG_EDI, UC_X86_REG_EBP,
+                            };
+
+                            for (const auto reg : candidates) {
+                                const auto value = get_x86_reg_value(reg);
+                                if (value != 0 &&
+                                    (value & ~0xFFFULL) != (get_pc() & ~0xFFFULL) &&
+                                    back_page(value)) {
+                                    backed = true;
+                                    break;
+                                }
                             }
                         }
-                    }
 
-                    if (backed) {
-                        if (s_zero_backed++ < 16) {
-                            printf("[unthemidator][fix] zero-backed data fault at pc=0x%llX (pending=0x%llX)\n",
-                                static_cast<unsigned long long>(fault_pc),
-                                static_cast<unsigned long long>(m_pending_unmapped));
+                        if (backed) {
+                            if (s_zero_backed++ < 16) {
+                                printf("[unthemidator][fix] backed data fault at pc=0x%llX (fault=0x%llX)\n",
+                                    static_cast<unsigned long long>(get_pc()),
+                                    static_cast<unsigned long long>(fault));
+                            }
+                            const auto retry_pc = get_pc();
+                            start = retry_pc;
+                            set_pc(retry_pc);
+                            result = UC_ERR_OK;
+                            continue;
                         }
-                        m_pending_unmapped = 0;
-                        set_pc(fault_pc);
-                        start = fault_pc;
-                        result = UC_ERR_OK;
-                        continue;
                     }
                 }
 
