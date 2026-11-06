@@ -889,6 +889,24 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                     if (!present) {
                         printf("[unthemidator][diag]   page NOT present in any mapped region\n");
                     }
+
+                    // diag: verify the page is actually readable right now
+                    {
+                        uint8_t probe[4] = {0};
+                        const auto rc = uc_mem_read(m_uc, fault_pc, probe, sizeof(probe));
+                        printf("[unthemidator][diag]   uc_mem_read(0x%llX) = %d, bytes=%02X %02X %02X %02X\n",
+                            static_cast<unsigned long long>(fault_pc), static_cast<int>(rc),
+                            probe[0], probe[1], probe[2], probe[3]);
+                    }
+
+                    // diag: check current registers to understand the emulation state
+                    {
+                        const auto eip = get_x86_reg_value(UC_X86_REG_EIP);
+                        const auto esp = get_x86_reg_value(UC_X86_REG_ESP);
+                        printf("[unthemidator][diag]   EIP=0x%llX ESP=0x%llX\n",
+                            static_cast<unsigned long long>(eip),
+                            static_cast<unsigned long long>(esp));
+                    }
                 }
 
                 result = UC_ERR_OK;
