@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "c_emulator.hpp"
+#include "hooks.hpp"
 #include "windows.hpp"
 
 #include "../memory/c_memory_manager.hpp"
@@ -191,16 +192,50 @@ static bool dispatch_hook(uc_engine *uc, const uint64_t address, c_emulator_ctx*
     const auto ret_addr = is_x86 ? ctx->read<uint32_t>(sp).value() : ctx->read<uint64_t>(sp).value();
 
     if (!hook) {
-        // FIX: instead of aborting, treat an unhooked call as a no-op.
-        // Returning 0 breaks APIs whose result is used as a pointer/handle later on
-        // (the guest then dereferences NULL and the emulator runs off into unmapped
-        // space). Return a small non-NULL poison value instead, and log the call site
-        // so the offending API can be identified.
+        // An unhooked call is one of two things:
         //
+        //  a) an API the host forgot to list in main.cpp's hook table. Reverse-mapping
+        //     the target to module!function makes that obvious and fixable.
+        //  b) a Themida VM dispatch that find_vm_trampolines() could not classify yet
+        //     because the entry bytes are still encrypted at scan time. These live in
+        //     the packer's own sections and must NOT be answered with a poison handle:
+        //     the runtime treats the handle as valid, derives addresses from it and
+        //     soon jumps into unmapped or stack memory.
+        //
+        // Route (b) through the VM entry hook so the runtime observes a real VM call,
+        // and answer (a) with the poison handle as before.
+        const auto* import = ctx->get_imports()->find_import_by_address(address);
+        const auto* unpacker = ctx->get_themida_unpacker();
+        const auto is_packer_code = unpacker != nullptr && unpacker->is_packer_code_address(address);
+
+        if (import == nullptr && is_packer_code) {
+            static int s_vm_dispatch = 0;
+            if (s_vm_dispatch++ < 24) {
+                printf("[unthemidator][fix] treating unhooked packer call at 0x%llX as VM entry (ret 0x%llX)\n",
+                    static_cast<unsigned long long>(address),
+                    static_cast<unsigned long long>(ret_addr));
+            }
+
+            ctx->set_pc(address);
+            hooks::vm_enter(ctx);
+
+            if (ctx->is_stopped()) {
+                uc_emu_stop(uc);
+                return false;
+            }
+
+            // vm_enter consumes no arguments: pop the return address like a RET.
+            sp += is_x86 ? sizeof(uint32_t) : sizeof(uint64_t);
+            ctx->set_x86_reg_value(sp_reg, sp);
+            ctx->set_pc(ret_addr);
+
+            return true;
+        }
+
         // Reverse-map the call target to a module/export name: an unhooked call is
         // almost always an API that the caller forgot to add to main.cpp's hook table,
         // and knowing the name turns guesswork into a one-line fix.
-        if (const auto* import = ctx->get_imports()->find_import_by_address(address)) {
+        if (import != nullptr) {
             printf("[unthemidator][fix] unhooked call at 0x%llX -> %s!%s (ret 0x%llX), returning poison handle\n",
                 static_cast<unsigned long long>(address),
                 import->m_module.c_str(), import->m_name.c_str(),
