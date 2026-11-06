@@ -16,6 +16,85 @@ static void code_callback(uc_engine *uc, const uint64_t address, const uint32_t 
     (*static_cast<std::function<code_callback_t>*>(cb))(uc, address, size);
 }
 
+// Decode the instruction at `pc` and, when it carries a memory operand, compute the
+// effective address that operand points at. This is what the emulator will dereference,
+// so backing exactly that page is far more reliable than probing registers blindly.
+// Returns std::nullopt when the instruction has no memory operand or cannot be decoded.
+static std::optional<uint64_t> memory_operand_address(uc_engine* uc, ZydisDecoder* decoder,
+    const uint64_t pc) {
+    if (decoder == nullptr) {
+        return std::nullopt;
+    }
+
+    std::array<uint8_t, 16> buffer{};
+    for (uint32_t i = 0; i < buffer.size(); ++i) {
+        if (uc_mem_read(uc, pc + i, &buffer[i], 1) != UC_ERR_OK) {
+            if (i == 0) {
+                return std::nullopt;
+            }
+            break;
+        }
+    }
+
+    ZydisDecodedInstruction instruction{};
+    std::array<ZydisDecodedOperand, ZYDIS_MAX_OPERAND_COUNT> operands{};
+
+    if (ZYAN_FAILED(ZydisDecoderDecodeFull(decoder, buffer.data(), buffer.size(),
+            &instruction, operands.data()))) {
+        return std::nullopt;
+    }
+
+    for (uint32_t i = 0; i < instruction.operand_count; ++i) {
+        const auto& operand = operands[i];
+        if (operand.type != ZYDIS_OPERAND_TYPE_MEMORY) {
+            continue;
+        }
+
+        // Rebuild the effective address from the live register values: Zydis computes
+        // the address from a register context we do not maintain, so read the base and
+        // index registers straight out of Unicorn.
+        uint64_t value = static_cast<uint64_t>(operand.mem.disp);
+
+        const auto read_reg = [&](const ZydisRegister reg, uint64_t& out) -> bool {
+            if (reg == ZYDIS_REGISTER_NONE) {
+                return true;
+            }
+            const auto uc_reg = static_cast<int>(reg) == ZYDIS_REGISTER_EAX ? UC_X86_REG_EAX :
+                                static_cast<int>(reg) == ZYDIS_REGISTER_EBX ? UC_X86_REG_EBX :
+                                static_cast<int>(reg) == ZYDIS_REGISTER_ECX ? UC_X86_REG_ECX :
+                                static_cast<int>(reg) == ZYDIS_REGISTER_EDX ? UC_X86_REG_EDX :
+                                static_cast<int>(reg) == ZYDIS_REGISTER_ESI ? UC_X86_REG_ESI :
+                                static_cast<int>(reg) == ZYDIS_REGISTER_EDI ? UC_X86_REG_EDI :
+                                static_cast<int>(reg) == ZYDIS_REGISTER_EBP ? UC_X86_REG_EBP :
+                                static_cast<int>(reg) == ZYDIS_REGISTER_ESP ? UC_X86_REG_ESP : -1;
+            if (uc_reg < 0) {
+                return false;
+            }
+            uint32_t v = 0;
+            if (uc_reg_read(uc, uc_reg, &v) != UC_ERR_OK) {
+                return false;
+            }
+            out = v;
+            return true;
+        };
+
+        uint64_t base = 0;
+        uint64_t index = 0;
+        if (!read_reg(operand.mem.base, base) || !read_reg(operand.mem.index, index)) {
+            continue;
+        }
+
+        value += base;
+        if (operand.mem.index != ZYDIS_REGISTER_NONE) {
+            value += index * operand.mem.scale;
+        }
+
+        return value;
+    }
+
+    return std::nullopt;
+}
+
 static void mem_callback(uc_engine *uc, const uc_mem_type type, const uint64_t address,
     const int size, const int64_t value, void* cb) {
     //
@@ -953,6 +1032,24 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
 
                         if (!fault_is_pc && back_page(fault)) {
                             backed = true;
+                        }
+
+                        // Best source of truth: decode the faulting instruction and
+                        // back the page its memory operand actually targets. Probing
+                        // registers by hand cannot recover the disp32 of a
+                        // `call dword ptr [edi + disp32]`, which is exactly the shape
+                        // Themida uses when it dispatches through a table.
+                        if (!backed) {
+                            if (const auto operand_address =
+                                    memory_operand_address(m_uc, m_emulator->get_decoder(), get_pc())) {
+                                if (*operand_address != 0 && back_page(*operand_address)) {
+                                    backed = true;
+                                    if (s_zero_backed < 16) {
+                                        printf("[unthemidator][diag]   operand address 0x%llX from insn\n",
+                                            static_cast<unsigned long long>(*operand_address));
+                                    }
+                                }
+                            }
                         }
 
                         if (!backed) {

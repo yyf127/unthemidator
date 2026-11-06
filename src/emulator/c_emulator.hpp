@@ -18,6 +18,10 @@ public:
     [[nodiscard]] e_architecture get_arch() const;
 
     uint32_t get_instr_length(uint64_t address);
+
+    // Exposes the shared decoder so the context can decode an instruction in place
+    // (used to compute the effective address of a faulting memory operand).
+    [[nodiscard]] ZydisDecoder* get_decoder() { return &m_decoder; }
 private:
     [[nodiscard]] uc_engine* create_uc_engine() const;
 
