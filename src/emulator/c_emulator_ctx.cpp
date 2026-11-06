@@ -196,9 +196,20 @@ static bool dispatch_hook(uc_engine *uc, const uint64_t address, c_emulator_ctx*
         // (the guest then dereferences NULL and the emulator runs off into unmapped
         // space). Return a small non-NULL poison value instead, and log the call site
         // so the offending API can be identified.
-        printf("[unthemidator][fix] unhooked call at 0x%llX (ret 0x%llX), returning poison handle\n",
-            static_cast<unsigned long long>(address),
-            static_cast<unsigned long long>(ret_addr));
+        //
+        // Reverse-map the call target to a module/export name: an unhooked call is
+        // almost always an API that the caller forgot to add to main.cpp's hook table,
+        // and knowing the name turns guesswork into a one-line fix.
+        if (const auto* import = ctx->get_imports()->find_import_by_address(address)) {
+            printf("[unthemidator][fix] unhooked call at 0x%llX -> %s!%s (ret 0x%llX), returning poison handle\n",
+                static_cast<unsigned long long>(address),
+                import->m_module.c_str(), import->m_name.c_str(),
+                static_cast<unsigned long long>(ret_addr));
+        } else {
+            printf("[unthemidator][fix] unhooked call at 0x%llX (ret 0x%llX), returning poison handle\n",
+                static_cast<unsigned long long>(address),
+                static_cast<unsigned long long>(ret_addr));
+        }
 
         ctx->set_result(0x13370000);
 
