@@ -891,6 +891,71 @@ uc_err c_emulator_ctx::emulate(uint64_t start, const uint64_t end, const size_t 
                     }
                 }
 
+                // FIX: last-resort backing for data faults the strategies above could
+                // not resolve. Themida's VM routinely dereferences values derived from
+                // small poison handles and from registers that the per-register commit
+                // pass skipped (values < 0x10000). Those are still *data* accesses, not
+                // control transfers, so backing them with a zero page is safe: guest
+                // code reads zeroes and keeps going, instead of aborting the whole run
+                // with "unmapped access ... stopping".
+                //
+                // FETCH is deliberately excluded for low addresses so a null/poison
+                // call keeps being handled by the null-call path above rather than
+                // walking through zero-filled memory.
+                if (result == UC_ERR_READ_UNMAPPED || result == UC_ERR_WRITE_UNMAPPED) {
+                    static int s_zero_backed = 0;
+                    bool backed = false;
+
+                    auto back_page = [&](const uint64_t addr) -> bool {
+                        if (addr >= 0x10000 && commit_reserved_page(addr)) {
+                            return true;
+                        }
+                        const auto page = addr & ~0xFFFULL;
+                        if (uc_mem_map(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK ||
+                            uc_mem_protect(m_uc, page, 0x1000, UC_PROT_ALL) == UC_ERR_OK) {
+                            return true;
+                        }
+                        return false;
+                    };
+
+                    // Prefer the recorded fault address; fall back to the registers that
+                    // could serve as base/index for the offending memory operand.
+                    if (const auto pending = m_pending_unmapped) {
+                        if (back_page(pending)) {
+                            backed = true;
+                        }
+                    }
+
+                    if (!backed) {
+                        const uc_x86_reg candidates[] = {
+                            UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX,
+                            UC_X86_REG_ESI, UC_X86_REG_EDI, UC_X86_REG_EBP,
+                        };
+
+                        for (const auto reg : candidates) {
+                            const auto value = get_x86_reg_value(reg);
+                            if (value != 0 && (value & ~0xFFFULL) != (fault_pc & ~0xFFFULL) &&
+                                back_page(value)) {
+                                backed = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (backed) {
+                        if (s_zero_backed++ < 16) {
+                            printf("[unthemidator][fix] zero-backed data fault at pc=0x%llX (pending=0x%llX)\n",
+                                static_cast<unsigned long long>(fault_pc),
+                                static_cast<unsigned long long>(m_pending_unmapped));
+                        }
+                        m_pending_unmapped = 0;
+                        set_pc(fault_pc);
+                        start = fault_pc;
+                        result = UC_ERR_OK;
+                        continue;
+                    }
+                }
+
                 printf("[unthemidator][fix] unmapped access at pc=0x%llX (uc_err=%d, pending=0x%llX), stopping\n",
                     static_cast<unsigned long long>(fault_pc), static_cast<int>(result),
                     static_cast<unsigned long long>(m_pending_unmapped));
@@ -1015,6 +1080,18 @@ void c_emulator_ctx::run(const uint64_t start, const uint64_t end, std::function
     //
     uc_hook code_trace, mem_trace;
     auto err = UC_ERR_OK;
+
+    // FIX: back the poison-handle region with real, writable memory.
+    // dispatch_hook() returns 0x13370000 for calls to APIs it does not hook. Themida
+    // treats that value as a handle and then derives pointers from it (e.g. reads
+    // [handle + 0x8], indexes arrays), which would fault on unmapped space. Reserving
+    // a page there lets those accesses succeed and yield zeroes instead of aborting.
+    constexpr uint64_t k_poison_base = 0x13370000;
+    constexpr uint64_t k_poison_size = 0x10000;
+    if (uc_mem_map(m_uc, k_poison_base, k_poison_size, UC_PROT_ALL) != UC_ERR_OK) {
+        // already mapped (or mapped at a different granularity) - just ensure access
+        uc_mem_protect(m_uc, k_poison_base, k_poison_size, UC_PROT_ALL);
+    }
 
     // FIX: remember unmapped accesses instead of servicing them inside the hook.
     // Calling uc_mem_map()/uc_mem_protect() from within a Unicorn hook callback is
