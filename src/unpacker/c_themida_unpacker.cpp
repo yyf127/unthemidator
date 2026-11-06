@@ -242,14 +242,24 @@ void c_themida_unpacker::startup() {
                 }
             }
         } else {
+            std::cout << "[unthemidator][diag] entering main run(), pc=0x" << std::hex
+                      << pc << " end=0x" << return_address << std::dec << std::endl;
+
             m_emulator_ctx->run(pc, return_address);
+
+            std::cout << "[unthemidator][diag] main run() returned, pc=0x" << std::hex
+                      << m_emulator_ctx->get_pc() << std::dec << std::endl;
         }
-    } catch (std::runtime_error &) {
+    } catch (std::runtime_error &e) {
+        std::cout << "[unthemidator][diag] emulation raised: " << e.what() << std::endl;
         // only throw if there are no OEP candidates
         if (m_called_addresses.empty()) {
             throw;
         }
     }
+
+    std::cout << "[unthemidator][diag] OEP candidates collected: "
+              << m_called_addresses.size() << std::endl;
 
     m_emulator_ctx->remove_mem_hook(image_base);
 
